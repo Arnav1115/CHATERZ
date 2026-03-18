@@ -205,23 +205,7 @@ Use:
 npm start
 ```
 
----
 
-## Screenshots
-
-Add your screenshots here (for example, in a `screenshots/` folder) and link them:
-
-- `![Public chat view](screenshots/public-chat.png)`
-- `![Dark mode](screenshots/dark-mode.png)`
-
----
-
-## Notes / Customization
-
-- Update styles in `client/style.css` for branding tweaks.
-- Adjust message history limit in `server/server.js` (currently 50).
-- Enhance authentication by adding real user accounts (currently username-only).
-- Swap the emoji set in `client/script.js` and `index.html` for your own.
 
 ---
 
