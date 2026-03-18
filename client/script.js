@@ -120,7 +120,8 @@
     }
 
     username = raw;
-    socket.emit('join', username, (res) => {
+    localStorage.setItem('chat-username', username);
+    socket.emit('join', { username, silent: false }, (res) => {
       if (res && res.error) {
         alert(res.error);
         return;
@@ -132,6 +133,21 @@
       messageInput.focus();
     });
   }
+
+  // Auto-rejoin on reconnect (common on Render/production)
+  socket.on('connect', () => {
+    const stored = localStorage.getItem('chat-username');
+    if (stored && !username) {
+      username = stored;
+      profileName.textContent = username;
+      profileAvatar.setAttribute('title', username);
+      backdrop.classList.add('hidden');
+    }
+
+    if (username) {
+      socket.emit('join', { username, silent: true });
+    }
+  });
 
   function formatTime(ts) {
     if (!ts) return '';

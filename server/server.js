@@ -81,13 +81,22 @@ io.on('connection', (socket) => {
   console.log('New client connected', socket.id);
 
   // User joins with a username
-  socket.on('join', async (username, callback) => {
-    if (!username || typeof username !== 'string') {
+  socket.on('join', async (input, callback) => {
+    const usernameRaw =
+      typeof input === 'string'
+        ? input
+        : input && typeof input.username === 'string'
+          ? input.username
+          : '';
+
+    const silent = !!(input && typeof input === 'object' && input.silent);
+
+    if (!usernameRaw) {
       if (callback) callback({ error: 'Invalid username' });
       return;
     }
 
-    username = username.trim();
+    const username = usernameRaw.trim();
     if (!username) {
       if (callback) callback({ error: 'Username cannot be empty' });
       return;
@@ -110,14 +119,15 @@ io.on('connection', (socket) => {
       socket.emit('error_message', 'Failed to load chat history.');
     }
 
-    // Broadcast join system message
-    const joinMessage = {
-      user: 'System',
-      text: `${username} joined the chat`,
-      to: 'all',
-      timestamp: new Date().toISOString()
-    };
-    io.emit('system_message', joinMessage);
+    if (!silent) {
+      const joinMessage = {
+        user: 'System',
+        text: `${username} joined the chat`,
+        to: 'all',
+        timestamp: new Date().toISOString()
+      };
+      io.emit('system_message', joinMessage);
+    }
 
     // Update online users list
     io.emit('online_users', Array.from(userSockets.keys()));
