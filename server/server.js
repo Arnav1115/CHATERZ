@@ -9,6 +9,8 @@ const { Server } = require('socket.io');
 
 const connectDB = require('./config/db');
 const Message = require('./models/Message');
+const User = require('./models/User');
+const Story = require('./models/Story');
 
 const app = express();
 const server = http.createServer(app);
@@ -74,6 +76,24 @@ app.post('/api/upload', upload.single('file'), (req, res) => {
 const onlineUsers = new Map(); // socketId -> username
 const userSockets = new Map(); // username -> socketId
 const activeCalls = new Map(); // username -> peer username
+const socketRooms = new Map(); // socketId -> room
+
+const defaultRooms = ['public', 'general', 'random', 'help'];
+
+async function emitOnlineUsers() {
+  const usernames = Array.from(userSockets.keys());
+  const docs = await User.find({ username: { $in: usernames } })
+    .select('username avatarSeed lastSeen')
+    .lean();
+  const byName = new Map(docs.map((d) => [d.username, d]));
+  const payload = usernames.map((u) => ({
+    username: u,
+    avatarSeed: (byName.get(u) && byName.get(u).avatarSeed) || u,
+    lastSeen: (byName.get(u) && byName.get(u).lastSeen) || new Date().toISOString(),
+    online: true
+  }));
+  io.emit('online_users', payload);
+}
 
 const PORT = process.env.PORT || 5000;
 
@@ -90,6 +110,10 @@ io.on('connection', (socket) => {
           : '';
 
     const silent = !!(input && typeof input === 'object' && input.silent);
+    const avatarSeed =
+      input && typeof input === 'object' && typeof input.avatarSeed === 'string'
+        ? input.avatarSeed.trim()
+        : usernameRaw.trim();
 
     if (!usernameRaw) {
       if (callback) callback({ error: 'Invalid username' });
@@ -104,10 +128,18 @@ io.on('connection', (socket) => {
 
     onlineUsers.set(socket.id, username);
     userSockets.set(username, socket.id);
+    socketRooms.set(socket.id, 'public');
+    socket.join('public');
 
-    // Load last 50 messages
+    await User.updateOne(
+      { username },
+      { $set: { username, avatarSeed, lastSeen: new Date() } },
+      { upsert: true }
+    );
+
+    // Load last 50 messages (public room)
     try {
-      const recent = await Message.find({})
+      const recent = await Message.find({ room: 'public', to: 'all' })
         .sort({ timestamp: -1 })
         .limit(50)
         .lean();
@@ -129,10 +161,37 @@ io.on('connection', (socket) => {
       io.emit('system_message', joinMessage);
     }
 
-    // Update online users list
-    io.emit('online_users', Array.from(userSockets.keys()));
+    await emitOnlineUsers();
 
     if (callback) callback({ success: true, username });
+  });
+
+  socket.on('rooms:list', (callback) => {
+    callback && callback({ rooms: defaultRooms });
+  });
+
+  socket.on('room:join', async (payload, callback) => {
+    const username = onlineUsers.get(socket.id);
+    if (!username) return callback && callback({ error: 'User not joined' });
+
+    const room = payload && payload.room ? String(payload.room).trim().toLowerCase() : 'public';
+    if (!room) return callback && callback({ error: 'Invalid room' });
+
+    const prev = socketRooms.get(socket.id) || 'public';
+    socket.leave(prev);
+    socket.join(room);
+    socketRooms.set(socket.id, room);
+
+    try {
+      const recent = await Message.find({ room, to: 'all' })
+        .sort({ timestamp: -1 })
+        .limit(50)
+        .lean();
+      socket.emit('chat_history', recent.reverse());
+      callback && callback({ success: true, room });
+    } catch (e) {
+      callback && callback({ error: 'Failed to load room history' });
+    }
   });
 
   function isUserBusy(user) {
@@ -262,6 +321,7 @@ io.on('connection', (socket) => {
 
       const text = (payload && payload.text ? String(payload.text) : '').trim();
       let to = payload && payload.to ? String(payload.to).trim() : 'all';
+      const room = payload && payload.room ? String(payload.room).trim().toLowerCase() : null;
       const file = payload && payload.file ? payload.file : null;
 
       const fileUrl = file && file.url ? String(file.url) : null;
@@ -273,12 +333,11 @@ io.on('connection', (socket) => {
         return;
       }
 
-      if (!to) {
-        to = 'all';
-      }
+      if (!to) to = 'all';
 
       const messageDoc = await Message.create({
         user: fromUser,
+        room: to === 'all' ? (room || socketRooms.get(socket.id) || 'public') : 'dm',
         text,
         to,
         fileUrl,
@@ -289,16 +348,19 @@ io.on('connection', (socket) => {
       const message = {
         _id: messageDoc._id.toString(),
         user: messageDoc.user,
+        room: messageDoc.room,
         text: messageDoc.text,
         to: messageDoc.to,
         timestamp: messageDoc.timestamp,
         fileUrl: messageDoc.fileUrl,
         fileName: messageDoc.fileName,
-        fileType: messageDoc.fileType
+        fileType: messageDoc.fileType,
+        reactions: messageDoc.reactions || [],
+        dmStatus: messageDoc.dmStatus || { deliveredAt: null, seenAt: null }
       };
 
       if (to === 'all') {
-        io.emit('chat_message', message);
+        io.to(message.room).emit('chat_message', message);
       } else {
         const targetSocketId = userSockets.get(to);
 
@@ -316,6 +378,135 @@ io.on('connection', (socket) => {
       console.error('Error handling chat_message:', err.message);
       if (callback) callback({ error: 'Failed to send message' });
       socket.emit('error_message', 'Failed to send message.');
+    }
+  });
+
+  socket.on('message:delivered', async (payload) => {
+    const me = onlineUsers.get(socket.id);
+    if (!me) return;
+    const messageId = payload && payload.messageId ? String(payload.messageId) : '';
+    if (!messageId) return;
+    const doc = await Message.findById(messageId);
+    if (!doc) return;
+    if (doc.to !== me) return;
+    if (!doc.dmStatus) doc.dmStatus = {};
+    if (!doc.dmStatus.deliveredAt) {
+      doc.dmStatus.deliveredAt = new Date();
+      await doc.save();
+      const senderSock = userSockets.get(doc.user);
+      if (senderSock) {
+        io.to(senderSock).emit('message:status', {
+          messageId: doc._id.toString(),
+          dmStatus: doc.dmStatus
+        });
+      }
+    }
+  });
+
+  socket.on('message:seen', async (payload) => {
+    const me = onlineUsers.get(socket.id);
+    if (!me) return;
+    const ids = payload && Array.isArray(payload.messageIds) ? payload.messageIds.map(String) : [];
+    if (ids.length === 0) return;
+    const docs = await Message.find({ _id: { $in: ids }, to: me });
+    const now = new Date();
+    for (const doc of docs) {
+      if (!doc.dmStatus) doc.dmStatus = {};
+      if (!doc.dmStatus.seenAt) {
+        doc.dmStatus.seenAt = now;
+        if (!doc.dmStatus.deliveredAt) doc.dmStatus.deliveredAt = now;
+        await doc.save();
+        const senderSock = userSockets.get(doc.user);
+        if (senderSock) {
+          io.to(senderSock).emit('message:status', {
+            messageId: doc._id.toString(),
+            dmStatus: doc.dmStatus
+          });
+        }
+      }
+    }
+  });
+
+  // Stories
+  socket.on('story:list', async (callback) => {
+    const now = new Date();
+    const stories = await Story.find({ expiresAt: { $gt: now } })
+      .sort({ timestamp: -1 })
+      .lean();
+    callback && callback({ stories });
+  });
+
+  socket.on('story:add', async (payload, callback) => {
+    const me = onlineUsers.get(socket.id);
+    if (!me) return callback && callback({ error: 'User not joined' });
+    const text = payload && payload.text ? String(payload.text).trim() : '';
+    const fileUrl = payload && payload.fileUrl ? String(payload.fileUrl) : null;
+    const fileType = payload && payload.fileType ? String(payload.fileType) : null;
+    if (!text && !fileUrl) return callback && callback({ error: 'Story must have text or file' });
+
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const story = await Story.create({ user: me, text, fileUrl, fileType, expiresAt });
+    io.emit('story:new', story.toObject());
+    callback && callback({ success: true });
+  });
+
+  socket.on('story:view', async (payload) => {
+    const me = onlineUsers.get(socket.id);
+    if (!me) return;
+    const storyId = payload && payload.storyId ? String(payload.storyId) : '';
+    if (!storyId) return;
+    await Story.updateOne({ _id: storyId }, { $addToSet: { viewers: me } });
+  });
+
+  // Reactions (toggle)
+  socket.on('message:react', async (payload, callback) => {
+    try {
+      const fromUser = onlineUsers.get(socket.id);
+      if (!fromUser) return callback && callback({ error: 'User not joined' });
+
+      const messageId = payload && payload.messageId ? String(payload.messageId) : '';
+      const emoji = payload && payload.emoji ? String(payload.emoji).trim() : '';
+
+      const allowed = new Set(['👍', '❤️', '😂', '🔥', '🎉', '😮']);
+      if (!messageId || !emoji || !allowed.has(emoji)) {
+        return callback && callback({ error: 'Invalid reaction' });
+      }
+
+      const doc = await Message.findById(messageId);
+      if (!doc) return callback && callback({ error: 'Message not found' });
+
+      const existingIdx = (doc.reactions || []).findIndex(
+        (r) => r.emoji === emoji && r.user === fromUser
+      );
+
+      if (existingIdx >= 0) {
+        doc.reactions.splice(existingIdx, 1);
+      } else {
+        doc.reactions.push({ emoji, user: fromUser });
+      }
+
+      await doc.save();
+
+      const updated = {
+        messageId: doc._id.toString(),
+        reactions: doc.reactions || []
+      };
+
+      if (doc.to === 'all') {
+        io.emit('message:reactions', updated);
+      } else {
+        const a = doc.user;
+        const b = doc.to;
+        const sockA = userSockets.get(a);
+        const sockB = userSockets.get(b);
+        if (sockA) io.to(sockA).emit('message:reactions', updated);
+        if (sockB && sockB !== sockA) io.to(sockB).emit('message:reactions', updated);
+      }
+
+      callback && callback({ success: true });
+    } catch (err) {
+      console.error('message:react error:', err.message);
+      callback && callback({ error: 'Failed to react' });
     }
   });
 
@@ -346,6 +537,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     const username = onlineUsers.get(socket.id);
     if (username) {
+      User.updateOne({ username }, { $set: { lastSeen: new Date() } }).catch(() => {});
       const peer = clearCallPair(username);
       if (peer) {
         const peerSocketId = userSockets.get(peer);
@@ -356,6 +548,7 @@ io.on('connection', (socket) => {
 
       onlineUsers.delete(socket.id);
       userSockets.delete(username);
+      socketRooms.delete(socket.id);
 
       const leaveMessage = {
         user: 'System',
@@ -364,7 +557,7 @@ io.on('connection', (socket) => {
         timestamp: new Date().toISOString()
       };
       io.emit('system_message', leaveMessage);
-      io.emit('online_users', Array.from(userSockets.keys()));
+      emitOnlineUsers().catch(() => {});
     }
     console.log('Client disconnected', socket.id);
   });

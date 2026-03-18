@@ -9,6 +9,22 @@
   const usersList = document.getElementById('usersList');
   const usersCount = document.getElementById('usersCount');
   const userSearchInput = document.getElementById('userSearchInput');
+  const roomsList = document.getElementById('roomsList');
+  const roomsCount = document.getElementById('roomsCount');
+  const roomNameInput = document.getElementById('roomNameInput');
+  const statusList = document.getElementById('statusList');
+  const statusCount = document.getElementById('statusCount');
+  const statusTextInput = document.getElementById('statusTextInput');
+  const statusFileInput = document.getElementById('statusFileInput');
+  const statusAttachBtn = document.getElementById('statusAttachBtn');
+  const postStatusBtn = document.getElementById('postStatusBtn');
+
+  const tabChats = document.getElementById('tabChats');
+  const tabRooms = document.getElementById('tabRooms');
+  const tabStatus = document.getElementById('tabStatus');
+  const panelChats = document.getElementById('panelChats');
+  const panelRooms = document.getElementById('panelRooms');
+  const panelStatus = document.getElementById('panelStatus');
   const messagesEl = document.getElementById('messages');
   const messageInput = document.getElementById('messageInput');
   const sendButton = document.getElementById('sendButton');
@@ -20,6 +36,8 @@
   const emojiPanel = document.getElementById('emojiPanel');
   const chatTargetLabel = document.getElementById('chatTargetLabel');
   const chatTargetSubLabel = document.getElementById('chatTargetSubLabel');
+  const messageSearchInput = document.getElementById('messageSearchInput');
+  const connStatus = document.getElementById('connStatus');
   const voiceCallBtn = document.getElementById('voiceCallBtn');
   const videoCallBtn = document.getElementById('videoCallBtn');
   const hangupBtn = document.getElementById('hangupBtn');
@@ -42,11 +60,17 @@
 
   let username = '';
   let currentTarget = 'all'; // 'all' or username string
+  let currentRoom = 'public';
   let isTyping = false;
   let typingTimeout = null;
   let pingAudio = null;
   let pendingFile = null;
-  let allOnlineUsers = [];
+  let allOnlineUsers = []; // [{username, avatarSeed, lastSeen, online}]
+  let rooms = [];
+  let statuses = [];
+  let pendingStatusFile = null;
+  let messageSearchQuery = '';
+  const messageIndex = new Map(); // messageId -> { message, elements }
 
   // Call state (WebRTC is wired up after server signaling is added)
   let callState = {
@@ -121,7 +145,7 @@
 
     username = raw;
     localStorage.setItem('chat-username', username);
-    socket.emit('join', { username, silent: false }, (res) => {
+    socket.emit('join', { username, avatarSeed: username, silent: false }, (res) => {
       if (res && res.error) {
         alert(res.error);
         return;
@@ -136,6 +160,11 @@
 
   // Auto-rejoin on reconnect (common on Render/production)
   socket.on('connect', () => {
+    if (connStatus) {
+      connStatus.textContent = 'Online';
+      connStatus.classList.add('ok');
+      connStatus.classList.remove('bad');
+    }
     const stored = localStorage.getItem('chat-username');
     if (stored && !username) {
       username = stored;
@@ -145,7 +174,40 @@
     }
 
     if (username) {
-      socket.emit('join', { username, silent: true });
+      socket.emit('join', { username, avatarSeed: username, silent: true });
+    }
+  });
+
+  function setTab(which) {
+    [tabChats, tabRooms, tabStatus].forEach((b) => b && b.classList.remove('active'));
+    [panelChats, panelRooms, panelStatus].forEach((p) => p && p.classList.add('hidden'));
+    if (which === 'chats') {
+      tabChats.classList.add('active');
+      panelChats.classList.remove('hidden');
+    } else if (which === 'rooms') {
+      tabRooms.classList.add('active');
+      panelRooms.classList.remove('hidden');
+    } else {
+      tabStatus.classList.add('active');
+      panelStatus.classList.remove('hidden');
+    }
+  }
+
+  tabChats && tabChats.addEventListener('click', () => setTab('chats'));
+  tabRooms && tabRooms.addEventListener('click', () => setTab('rooms'));
+  tabStatus && tabStatus.addEventListener('click', () => {
+    setTab('status');
+    socket.emit('story:list', (res) => {
+      statuses = (res && res.stories) || [];
+      renderStatuses();
+    });
+  });
+
+  socket.on('disconnect', () => {
+    if (connStatus) {
+      connStatus.textContent = 'Reconnecting...';
+      connStatus.classList.remove('ok');
+      connStatus.classList.add('bad');
     }
   });
 
@@ -179,6 +241,26 @@
 
     const bubble = document.createElement('div');
     bubble.className = 'message-bubble';
+    if (message && message._id) {
+      bubble.dataset.messageId = message._id;
+    }
+
+    // Quick reactions (hover tools)
+    const tools = document.createElement('div');
+    tools.className = 'reaction-tools';
+    ['👍', '❤️', '😂', '🔥', '🎉', '😮'].forEach((emoji) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'reaction-btn';
+      btn.textContent = emoji;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!message || !message._id) return;
+        socket.emit('message:react', { messageId: message._id, emoji });
+      });
+      tools.appendChild(btn);
+    });
+    bubble.appendChild(tools);
 
     const meta = document.createElement('div');
     meta.className = 'message-meta';
@@ -258,9 +340,16 @@
 
     bubble.appendChild(meta);
     bubble.appendChild(textDiv);
+
+    // Reactions row
+    const reactionsRow = document.createElement('div');
+    reactionsRow.className = 'reaction-row';
+    bubble.appendChild(reactionsRow);
     row.appendChild(bubble);
 
     messagesEl.appendChild(row);
+    indexMessage(message, row, bubble);
+    applyMessageSearch();
     scrollToBottom();
 
     if (!isSelf && pingAudio) {
@@ -269,8 +358,73 @@
     }
   }
 
+  function computeReactionCounts(reactions) {
+    const counts = new Map();
+    (reactions || []).forEach((r) => {
+      if (!r || !r.emoji) return;
+      counts.set(r.emoji, (counts.get(r.emoji) || 0) + 1);
+    });
+    return counts;
+  }
+
+  function hasUserReacted(reactions, emoji) {
+    return (reactions || []).some((r) => r && r.emoji === emoji && r.user === username);
+  }
+
+  function renderReactionsFor(messageId, reactions) {
+    const entry = messageIndex.get(messageId);
+    if (!entry) return;
+    const { reactionsRow } = entry.elements;
+    if (!reactionsRow) return;
+
+    reactionsRow.innerHTML = '';
+    const counts = computeReactionCounts(reactions);
+    if (counts.size === 0) return;
+
+    Array.from(counts.entries()).forEach(([emoji, count]) => {
+      const chip = document.createElement('div');
+      chip.className = 'reaction-chip' + (hasUserReacted(reactions, emoji) ? ' active' : '');
+      chip.textContent = `${emoji} ${count}`;
+      chip.addEventListener('click', () => {
+        socket.emit('message:react', { messageId, emoji });
+      });
+      reactionsRow.appendChild(chip);
+    });
+  }
+
+  function indexMessage(message, row, bubble) {
+    if (!message || !message._id) return;
+    const reactionsRow = bubble.querySelector('.reaction-row');
+    messageIndex.set(message._id, {
+      message,
+      elements: { row, bubble, reactionsRow }
+    });
+
+    // initial reactions
+    renderReactionsFor(message._id, message.reactions || []);
+  }
+
+  function applyMessageSearch() {
+    const q = (messageSearchQuery || '').trim().toLowerCase();
+    messageIndex.forEach((entry) => {
+      const { message, elements } = entry;
+      const hay = `${message.user || ''} ${message.text || ''} ${message.fileName || ''}`.toLowerCase();
+      const match = !q || hay.includes(q);
+      if (elements.row) {
+        elements.row.style.display = match ? '' : 'none';
+      }
+    });
+  }
+
+  if (messageSearchInput) {
+    messageSearchInput.addEventListener('input', () => {
+      messageSearchQuery = messageSearchInput.value || '';
+      applyMessageSearch();
+    });
+  }
+
   function updateUsersList(users) {
-    allOnlineUsers = Array.from(new Set(users || []));
+    allOnlineUsers = users || [];
     renderUsersList();
   }
 
@@ -293,17 +447,18 @@
     usersList.appendChild(allItem);
 
     uniqueUsers
-      .filter((user) => user !== username)
-      .filter((user) => !q || user.toLowerCase().includes(q))
-      .forEach((user) => {
-      if (user === username) return;
+      .filter((u) => u && u.username && u.username !== username)
+      .filter((u) => !q || u.username.toLowerCase().includes(q))
+      .forEach((u) => {
+      const user = u.username;
       const li = document.createElement('li');
       li.className = 'user-item' + (currentTarget === user ? ' active' : '');
       li.dataset.username = user;
 
+      const lastSeen = u.lastSeen ? new Date(u.lastSeen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
       li.innerHTML = `
         <span class="user-name">${user}</span>
-        <span class="user-badge">DM</span>
+        <span class="user-badge">DM • ${lastSeen}</span>
       `;
 
       li.addEventListener('click', () => {
@@ -333,8 +488,8 @@
 
   function refreshUserSelectionLabels() {
     if (currentTarget === 'all') {
-      chatTargetLabel.textContent = 'Public chat';
-      chatTargetSubLabel.textContent = 'Messages to everyone';
+      chatTargetLabel.textContent = `#${currentRoom}`;
+      chatTargetSubLabel.textContent = `Room chat • everyone in #${currentRoom}`;
       voiceCallBtn.disabled = true;
       videoCallBtn.disabled = true;
     } else {
@@ -344,6 +499,41 @@
       videoCallBtn.disabled = false;
     }
   }
+
+  function renderRooms() {
+    if (!roomsList) return;
+    roomsList.innerHTML = '';
+    roomsCount.textContent = rooms.length.toString();
+    rooms.forEach((r) => {
+      const li = document.createElement('li');
+      li.className = 'user-item' + (currentRoom === r ? ' active' : '');
+      li.innerHTML = `<span class="user-name">#${r}</span><span class="user-badge">Room</span>`;
+      li.addEventListener('click', () => {
+        currentTarget = 'all';
+        socket.emit('room:join', { room: r }, (res) => {
+          if (res && res.error) return alert(res.error);
+          currentRoom = r;
+          refreshUserSelection();
+          setTab('chats');
+        });
+      });
+      roomsList.appendChild(li);
+    });
+  }
+
+  socket.emit('rooms:list', (res) => {
+    rooms = (res && res.rooms) || ['public'];
+    renderRooms();
+  });
+
+  roomNameInput && roomNameInput.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const name = roomNameInput.value.trim().toLowerCase();
+    if (!name) return;
+    if (!rooms.includes(name)) rooms.unshift(name);
+    roomNameInput.value = '';
+    renderRooms();
+  });
 
   if (userSearchInput) {
     userSearchInput.addEventListener('input', () => {
@@ -601,6 +791,7 @@
         {
           text,
           to: currentTarget,
+          room: currentTarget === 'all' ? currentRoom : null,
           file: fileMeta
         },
         (res) => {
@@ -683,11 +874,113 @@
 
   socket.on('chat_history', (messages) => {
     messagesEl.innerHTML = '';
+    messageIndex.clear();
     (messages || []).forEach((msg) => renderMessage(msg));
   });
 
   socket.on('chat_message', (message) => {
     renderMessage(message);
+    // DM delivery ticks
+    if (message && message.to === username) {
+      socket.emit('message:delivered', { messageId: message._id });
+    }
+  });
+
+  // DM seen ticks when focusing a DM
+  window.addEventListener('focus', () => {
+    if (currentTarget !== 'all') {
+      const ids = [];
+      messageIndex.forEach((entry) => {
+        const m = entry.message;
+        if (m && m.to === username && m.user === currentTarget && (!m.dmStatus || !m.dmStatus.seenAt)) {
+          ids.push(m._id);
+        }
+      });
+      if (ids.length) socket.emit('message:seen', { messageIds: ids });
+    }
+  });
+
+  socket.on('message:status', (payload) => {
+    const { messageId, dmStatus } = payload || {};
+    if (!messageId) return;
+    const entry = messageIndex.get(messageId);
+    if (entry) {
+      entry.message.dmStatus = dmStatus;
+    }
+  });
+
+  function renderStatuses() {
+    if (!statusList) return;
+    statusList.innerHTML = '';
+    statusCount.textContent = (statuses || []).length.toString();
+    (statuses || []).forEach((s) => {
+      const li = document.createElement('li');
+      li.className = 'user-item';
+      const t = s.timestamp ? new Date(s.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      li.innerHTML = `<span class="user-name">${s.user} • ${t}</span><span class="user-badge">View</span>`;
+      li.addEventListener('click', () => {
+        socket.emit('story:view', { storyId: s._id });
+        if (s.fileUrl) window.open(s.fileUrl, '_blank');
+        else alert(s.text || 'Status');
+      });
+      statusList.appendChild(li);
+    });
+  }
+
+  statusAttachBtn && statusAttachBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    statusFileInput.click();
+  });
+  statusFileInput && statusFileInput.addEventListener('change', () => {
+    pendingStatusFile = (statusFileInput.files && statusFileInput.files[0]) || null;
+  });
+
+  postStatusBtn && postStatusBtn.addEventListener('click', () => {
+    const text = statusTextInput.value.trim();
+    const hasFile = !!pendingStatusFile;
+    if (!text && !hasFile) return;
+
+    const post = (fileMeta) => {
+      socket.emit('story:add', { text, fileUrl: fileMeta && fileMeta.url, fileType: fileMeta && fileMeta.type }, (res) => {
+        if (res && res.error) alert(res.error);
+        statusTextInput.value = '';
+        pendingStatusFile = null;
+        if (statusFileInput) statusFileInput.value = '';
+        socket.emit('story:list', (r) => {
+          statuses = (r && r.stories) || [];
+          renderStatuses();
+        });
+      });
+    };
+
+    if (hasFile) {
+      const fd = new FormData();
+      fd.append('file', pendingStatusFile);
+      fetch('/api/upload', { method: 'POST', body: fd })
+        .then((r) => r.json())
+        .then((d) => {
+          if (d && d.error) return alert(d.error);
+          post({ url: d.fileUrl, type: d.fileType });
+        })
+        .catch(() => alert('Upload failed'));
+    } else {
+      post(null);
+    }
+  });
+
+  socket.on('story:new', (story) => {
+    statuses = [story, ...(statuses || [])];
+    renderStatuses();
+  });
+
+  socket.on('message:reactions', (payload) => {
+    const { messageId, reactions } = payload || {};
+    if (!messageId) return;
+    const entry = messageIndex.get(messageId);
+    if (entry) {
+      entry.message.reactions = reactions || [];
+    }
+    renderReactionsFor(messageId, reactions || []);
   });
 
   socket.on('system_message', (message) => {

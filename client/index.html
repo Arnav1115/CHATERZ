@@ -12,7 +12,7 @@
   <div class="app">
     <div class="sidebar">
       <div class="sidebar-header">
-        <div class="app-title">Chat Rooms</div>
+        <div class="app-title">CHATERZ</div>
         <button id="themeToggle" class="icon-button" title="Toggle dark mode">🌙</button>
       </div>
 
@@ -24,22 +24,61 @@
         </div>
       </div>
 
-      <div class="users-header">
-        <span>Online users</span>
-        <span id="usersCount" class="users-count">0</span>
+      <div class="sidebar-tabs">
+        <button id="tabChats" class="tab-btn active">Chats</button>
+        <button id="tabRooms" class="tab-btn">Rooms</button>
+        <button id="tabStatus" class="tab-btn">Status</button>
       </div>
-      <div class="users-search">
-        <input id="userSearchInput" type="text" placeholder="Search users..." autocomplete="off" />
+
+      <div id="panelChats" class="sidebar-panel">
+        <div class="users-header">
+          <span>Online users</span>
+          <span id="usersCount" class="users-count">0</span>
+        </div>
+        <div class="users-search">
+          <input id="userSearchInput" type="text" placeholder="Search users..." autocomplete="off" />
+        </div>
+        <ul id="usersList" class="users-list"></ul>
       </div>
-      <ul id="usersList" class="users-list">
-      </ul>
+
+      <div id="panelRooms" class="sidebar-panel hidden">
+        <div class="users-header">
+          <span>Rooms</span>
+          <span id="roomsCount" class="users-count">0</span>
+        </div>
+        <div class="users-search">
+          <input id="roomNameInput" type="text" placeholder="Create/join room (e.g. general)" autocomplete="off" />
+        </div>
+        <ul id="roomsList" class="users-list"></ul>
+      </div>
+
+      <div id="panelStatus" class="sidebar-panel hidden">
+        <div class="users-header">
+          <span>Status</span>
+          <span id="statusCount" class="users-count">0</span>
+        </div>
+        <div class="users-search">
+          <input id="statusTextInput" type="text" placeholder="Write a status..." autocomplete="off" />
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <input id="statusFileInput" class="file-input" type="file" />
+            <button id="statusAttachBtn" class="icon-button attach-button" title="Attach">📎</button>
+            <button id="postStatusBtn" class="send-button" style="padding:9px 12px;">Post</button>
+          </div>
+        </div>
+        <ul id="statusList" class="users-list"></ul>
+      </div>
     </div>
 
     <div class="chat">
       <div class="chat-header">
-        <div>
+        <div class="chat-header-left">
           <div class="chat-room-title" id="chatTargetLabel">Public chat</div>
           <div class="chat-room-subtitle" id="chatTargetSubLabel">Messages to everyone</div>
+        </div>
+        <div class="chat-header-center">
+          <input id="messageSearchInput" class="chat-search" type="text" placeholder="Search messages..."
+            autocomplete="off" />
+          <div id="connStatus" class="conn-status">Connecting...</div>
         </div>
         <div class="call-actions">
           <button id="voiceCallBtn" class="icon-button" title="Voice call" disabled>📞</button>
