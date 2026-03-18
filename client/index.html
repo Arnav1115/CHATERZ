@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Realtime Chat</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+  <div class="app">
+    <div class="sidebar">
+      <div class="sidebar-header">
+        <div class="app-title">Chat Rooms</div>
+        <button id="themeToggle" class="icon-button" title="Toggle dark mode">🌙</button>
+      </div>
+
+      <div class="profile">
+        <div class="avatar" id="profileAvatar"></div>
+        <div class="profile-info">
+          <div id="profileName" class="profile-name"></div>
+          <div class="profile-status">Online</div>
+        </div>
+      </div>
+
+      <div class="users-header">
+        <span>Online users</span>
+        <span id="usersCount" class="users-count">0</span>
+      </div>
+      <div class="users-search">
+        <input id="userSearchInput" type="text" placeholder="Search users..." autocomplete="off" />
+      </div>
+      <ul id="usersList" class="users-list">
+      </ul>
+    </div>
+
+    <div class="chat">
+      <div class="chat-header">
+        <div>
+          <div class="chat-room-title" id="chatTargetLabel">Public chat</div>
+          <div class="chat-room-subtitle" id="chatTargetSubLabel">Messages to everyone</div>
+        </div>
+        <div class="call-actions">
+          <button id="voiceCallBtn" class="icon-button" title="Voice call" disabled>📞</button>
+          <button id="videoCallBtn" class="icon-button" title="Video call" disabled>🎥</button>
+          <button id="hangupBtn" class="icon-button danger hidden" title="Hang up">⛔</button>
+        </div>
+      </div>
+
+      <div id="messages" class="messages">
+      </div>
+
+      <div id="typingIndicator" class="typing-indicator"></div>
+
+      <div class="composer">
+        <button id="emojiToggle" class="icon-button" title="Emoji">😊</button>
+        <div id="emojiPanel" class="emoji-panel hidden">
+          <button class="emoji-btn">😀</button>
+          <button class="emoji-btn">😁</button>
+          <button class="emoji-btn">😂</button>
+          <button class="emoji-btn">😍</button>
+          <button class="emoji-btn">😎</button>
+          <button class="emoji-btn">🤔</button>
+          <button class="emoji-btn">😢</button>
+          <button class="emoji-btn">🙏</button>
+          <button class="emoji-btn">🔥</button>
+          <button class="emoji-btn">🎉</button>
+        </div>
+
+        <input id="messageInput" class="message-input" type="text" autocomplete="off"
+          placeholder="Type a message..." />
+        <input id="fileInput" class="file-input" type="file" />
+        <button id="attachButton" class="icon-button attach-button" title="Attach file">📎</button>
+        <button id="sendButton" class="send-button">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="backdrop" class="backdrop">
+    <div class="modal">
+      <h1>Welcome</h1>
+      <p>Choose a display name to join the chat.</p>
+      <input id="usernameInput" type="text" placeholder="Your name" maxlength="24" />
+      <button id="joinButton">Join chat</button>
+    </div>
+  </div>
+
+  <div id="callOverlay" class="call-overlay hidden">
+    <div class="call-window">
+      <div class="call-top">
+        <div>
+          <div id="callTitle" class="call-title">Calling...</div>
+          <div id="callSubtitle" class="call-subtitle"></div>
+        </div>
+        <button id="callCloseBtn" class="icon-button danger" title="Close">✕</button>
+      </div>
+
+      <div class="call-video-area">
+        <video id="remoteVideo" class="remote-video" autoplay playsinline></video>
+        <video id="localVideo" class="local-video" autoplay playsinline muted></video>
+      </div>
+
+      <div class="call-controls">
+        <button id="toggleMicBtn" class="icon-button" title="Mute/unmute mic">🎙️</button>
+        <button id="toggleCamBtn" class="icon-button" title="Enable/disable camera">📷</button>
+        <button id="endCallBtn" class="send-button danger-btn">End</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="incomingCallModal" class="incoming-call hidden">
+    <div class="incoming-card">
+      <div class="incoming-title" id="incomingTitle">Incoming call</div>
+      <div class="incoming-subtitle" id="incomingSubtitle"></div>
+      <div class="incoming-actions">
+        <button id="acceptCallBtn" class="send-button">Accept</button>
+        <button id="rejectCallBtn" class="send-button danger-btn">Reject</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="script.js"></script>
+</body>
+
+</html>
+
